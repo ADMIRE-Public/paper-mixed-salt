@@ -1,0 +1,7 @@
+numpy==1.26.4
+torch==2.4.0
+meshio==3.3.1
+matplotlib
+lxml
+pytz
+h5py
