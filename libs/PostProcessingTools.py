@@ -1,0 +1,473 @@
+"""
+Useful to read xdmf files and post-process results.
+"""
+# Copyright 2024 The safeincave community.
+#
+# This file is part of safeincave.
+#
+# Licensed under the GNU GENERAL PUBLIC LICENSE, Version 3 (the "License"); you may not
+# use this file except in compliance with the License.  You may obtain a copy
+# of the License at
+#
+#     https://spdx.org/licenses/GPL-3.0-or-later.html
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  See the
+# License for the specific language governing permissions and limitations under
+# the License.
+
+import meshio as ms
+import pandas as pd
+import numpy as np
+import os
+
+def find_point_mapping(original_points, new_points):
+    tol = 1e-10
+    point_mapping = np.empty(len(new_points), dtype=int)
+    for i, node in enumerate(new_points):
+        match = np.where(np.all(np.abs(original_points - node) < tol, axis=1))[0]
+        if len(match) == 1:
+            point_mapping[i] = match[0]
+        else:
+            raise ValueError(f"Node {i} not found uniquely in the new mesh.")
+    return point_mapping
+
+def find_mapping(msh_points, msh_cells, xdmf_file):
+    with ms.xdmf.TimeSeriesReader(xdmf_file) as reader:
+        points, cells = reader.read_points_cells()
+        mesh = ms.Mesh(points=points, cells=cells)
+        x = mesh.points[:,0]
+        y = mesh.points[:,1]
+        z = mesh.points[:,2]
+        xdmf_points = pd.DataFrame({'x': x, 'y': y, 'z': z})
+        p1 = mesh.cells["tetra"][:,0]
+        p2 = mesh.cells["tetra"][:,1]
+        p3 = mesh.cells["tetra"][:,2]
+        p4 = mesh.cells["tetra"][:,3]
+        xdmf_cells = pd.DataFrame({'p1': p1, 'p2': p2, 'p3': p3, 'p4': p4})
+    mapping = find_point_mapping(xdmf_points.values, msh_points.values)
+    return mapping
+
+
+def read_msh_as_pandas(file_name):
+    msh = ms.read(file_name)
+    # print(msh.cells)
+    # for k in range(len(msh.cells)):
+    #     m = msh.cells["tetra"][k].data.shape[1]
+    #     if m == 4:
+    #         break
+    # df_points = pd.DataFrame(msh.points, columns=["x", "y", "z"])
+    # df_cells = pd.DataFrame(msh.cells[k].data, columns=["p1", "p2", "p3", "p4"])
+    df_points = pd.DataFrame(msh.points, columns=["x", "y", "z"])
+    df_cells = pd.DataFrame(msh.cells["tetra"], columns=["p1", "p2", "p3", "p4"])
+    return df_points, df_cells
+
+def compute_cell_centroids(points, cells):
+    n, _ = cells.shape
+    x_mid = np.zeros(n)
+    y_mid = np.zeros(n)
+    z_mid = np.zeros(n)
+    x = points[:,0]
+    y = points[:,1]
+    z = points[:,2]
+    for i in range(n):
+        x_mid[i] = np.average(x[cells[i]])
+        y_mid[i] = np.average(y[cells[i]])
+        z_mid[i] = np.average(z[cells[i]])
+    df_mid = pd.DataFrame({'x': x_mid, 'y': y_mid, 'z': z_mid})
+    return df_mid
+
+def read_xdmf_as_pandas(file_name):
+    with ms.xdmf.TimeSeriesReader(file_name) as reader:
+        points, cells = reader.read_points_cells()
+        mesh = ms.Mesh(points=points, cells=cells)
+        x = mesh.points[:,0]
+        y = mesh.points[:,1]
+        z = mesh.points[:,2]
+        df_points = pd.DataFrame({'x': x, 'y': y, 'z': z})
+        p1 = mesh.cells["tetra"][:,0]
+        p2 = mesh.cells["tetra"][:,1]
+        p3 = mesh.cells["tetra"][:,2]
+        p4 = mesh.cells["tetra"][:,3]
+        df_cells = pd.DataFrame({'p1': p1, 'p2': p2, 'p3': p3, 'p4': p4})
+    return df_points, df_cells
+
+def read_scalar_from_cells(file_name):
+    with ms.xdmf.TimeSeriesReader(file_name) as reader:
+        points, cells = reader.read_points_cells()
+        n = cells["tetra"].data.shape[0]
+        m = reader.num_steps
+        A = np.zeros((n, m))
+        time_list = []
+        for k in range(reader.num_steps):
+            time, _, cell_data = reader.read_data(k)
+            time_list.append(time)
+            field_name = list(cell_data["tetra"].keys())[0]
+            A[:,k] = cell_data["tetra"][field_name].flatten()
+        df_scalar = pd.DataFrame(A, columns=time_list)
+    return df_scalar
+
+def read_scalar_from_points(file_name, mapping):
+    with ms.xdmf.TimeSeriesReader(file_name) as reader:
+        points, cells = reader.read_points_cells()
+        n = points.shape[0]
+        m = reader.num_steps
+        A = np.zeros((n, m))
+        time_list = []
+        for k in range(reader.num_steps):
+            time, point_data, _ = reader.read_data(k)
+            time_list.append(time)
+            field_name = list(point_data.keys())[0]
+            A[:,k] = point_data[field_name][:,0]
+        df_scalar = pd.DataFrame(A[mapping], columns=time_list)
+    return df_scalar
+
+def read_vector_from_points(file_name, point_mapping):
+    with ms.xdmf.TimeSeriesReader(file_name) as reader:
+        points, cells = reader.read_points_cells()
+        n = points.shape[0]
+        m = reader.num_steps
+        Ax = np.zeros((n, m))
+        Ay = np.zeros((n, m))
+        Az = np.zeros((n, m))
+        time_list = []
+        for k in range(reader.num_steps):
+            time, point_data, _ = reader.read_data(k)
+            time_list.append(time)
+            field_name = list(point_data.keys())[0]
+            Ax[:,k] = point_data[field_name][:,0]
+            Ay[:,k] = point_data[field_name][:,1]
+            Az[:,k] = point_data[field_name][:,2]
+        df_ux = pd.DataFrame(Ax[point_mapping], columns=time_list)
+        df_uy = pd.DataFrame(Ay[point_mapping], columns=time_list)
+        df_uz = pd.DataFrame(Az[point_mapping], columns=time_list)
+    return df_ux, df_uy, df_uz
+
+# def read_vector_from_points(file_name):
+#     with ms.xdmf.TimeSeriesReader(file_name) as reader:
+#         points, cells = reader.read_points_cells()
+#         n = points.shape[0]
+#         m = reader.num_steps
+#         Ax = np.zeros((n, m))
+#         Ay = np.zeros((n, m))
+#         Az = np.zeros((n, m))
+#         time_list = []
+#         for k in range(reader.num_steps):
+#             time, point_data, _ = reader.read_data(k)
+#             time_list.append(time)
+#             field_name = list(point_data.keys())[0]
+#             Ax[:,k] = point_data[field_name][:,0]
+#             Ay[:,k] = point_data[field_name][:,1]
+#             Az[:,k] = point_data[field_name][:,2]
+#         df_ux = pd.DataFrame(Ax, columns=time_list)
+#         df_uy = pd.DataFrame(Ay, columns=time_list)
+#         df_uz = pd.DataFrame(Az, columns=time_list)
+#     return df_ux, df_uy, df_uz
+
+
+def read_tensor_from_cells(file_name):
+    with ms.xdmf.TimeSeriesReader(file_name) as reader:
+        points, cells = reader.read_points_cells()
+        n = cells["tetra"].data.shape[0]
+        m = reader.num_steps
+        sxx = np.zeros((n, m))
+        syy = np.zeros((n, m))
+        szz = np.zeros((n, m))
+        sxy = np.zeros((n, m))
+        sxz = np.zeros((n, m))
+        syz = np.zeros((n, m))
+        time_list = []
+        for k in range(reader.num_steps):
+            time, _, cell_data = reader.read_data(k)
+            time_list.append(time)
+            # field_name = list(cell_data.keys())[0]
+            field_name = list(cell_data["tetra"].keys())[0]
+            sxx[:,k] = cell_data["tetra"][field_name][:,0]
+            syy[:,k] = cell_data["tetra"][field_name][:,4]
+            szz[:,k] = cell_data["tetra"][field_name][:,8]
+            sxy[:,k] = cell_data["tetra"][field_name][:,1]
+            sxz[:,k] = cell_data["tetra"][field_name][:,2]
+            syz[:,k] = cell_data["tetra"][field_name][:,5]
+        df_sxx = pd.DataFrame(sxx, columns=time_list)
+        df_syy = pd.DataFrame(syy, columns=time_list)
+        df_szz = pd.DataFrame(szz, columns=time_list)
+        df_sxy = pd.DataFrame(sxy, columns=time_list)
+        df_sxz = pd.DataFrame(sxz, columns=time_list)
+        df_syz = pd.DataFrame(syz, columns=time_list)
+    return df_sxx, df_syy, df_szz, df_sxy, df_sxz, df_syz
+
+
+
+
+
+
+
+
+
+def build_mapping(nodes_xdmf: np.ndarray, nodes_msh: np.ndarray) -> list[int]:
+    """
+    Build an index mapping from XDMF node order to MSH node order.
+
+    For each coordinate triplet in ``nodes_xdmf``, finds the row index in
+    ``nodes_msh`` with the exact same coordinates and returns the list of
+    corresponding indices.
+
+    Parameters
+    ----------
+    nodes_xdmf : (n_nodes, 3) ndarray of float
+        Node coordinates as read from an XDMF file.
+    nodes_msh : (n_nodes, 3) ndarray of float
+        Node coordinates as read from a .msh file.
+
+    Returns
+    -------
+    mapping : list of int
+        For each row in ``nodes_xdmf``, the index of the identical row in
+        ``nodes_msh``.
+
+    Notes
+    -----
+    This uses exact floating-point equality. If the two sources differ by
+    round-off, consider a tolerance-based nearest matching instead.
+    """
+    return [np.where((nodes_msh == row).all(axis=1))[0][0] for row in nodes_xdmf]
+
+def find_closest_point(target_point: np.ndarray, points: np.ndarray) -> int:
+    """
+    Find the index of the closest point in a set to a target point.
+
+    Parameters
+    ----------
+    target_point : (3,) ndarray of float
+        Query point (x, y, z).
+    points : (n_points, 3) ndarray of float
+        Candidate points.
+
+    Returns
+    -------
+    idx : int
+        Index of the closest point in ``points`` (Euclidean distance).
+    """
+    x_p, y_p, z_p = target_point
+    d = np.sqrt(  (points[:,0] - x_p)**2
+                + (points[:,1] - y_p)**2
+                + (points[:,2] - z_p)**2 )
+    p_idx = d.argmin()
+    return p_idx
+
+
+def compute_cell_centroids_2(cells: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """
+    Compute centroids of tetrahedral cells.
+
+    Parameters
+    ----------
+    cells : (n_cells, 4) ndarray of int
+        Tetrahedral connectivity (node indices per cell).
+    points : (n_nodes, 3) ndarray of float
+        Node coordinates (x, y, z).
+
+    Returns
+    -------
+    centroids : (n_cells, 3) ndarray of float
+        Centroid coordinates for each cell, computed as the arithmetic mean
+        of its four vertex coordinates.
+    """
+    n_cells = cells.shape[0]
+    centroids = np.zeros((n_cells, 3))
+    for i, cell in enumerate(cells):
+        p0 = points[cell[0]]
+        p1 = points[cell[1]]
+        p2 = points[cell[2]]
+        p3 = points[cell[3]]
+        x = (p0[0] + p1[0] + p2[0] + p3[0])/4
+        y = (p0[1] + p1[1] + p2[1] + p3[1])/4
+        z = (p0[2] + p1[2] + p2[2] + p3[2])/4
+        centroids[i,:] = np.array([x, y, z])
+    return centroids
+
+
+def read_cell_tensor(xdmf_field_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Read a time series of cell-centered 3x3 tensor fields from an XDMF file.
+
+    Parameters
+    ----------
+    xdmf_field_path : str
+        Path to the XDMF file containing cell data (``cells['tetra']``).
+
+    Returns
+    -------
+    centroids : (n_cells, 3) ndarray of float
+        Centroid coordinates of the tetrahedral cells.
+    time_list : (n_steps,) ndarray of float
+        Time values for each time step.
+    tensor_field : (n_steps, n_cells, 3, 3) ndarray of float
+        Tensor values per time step and cell.
+
+    Notes
+    -----
+    The function assumes a single tensor field is present under
+    ``cell_data['tetra']`` at each time step, and reshapes it to (3, 3) per cell.
+    """
+    reader = ms.xdmf.TimeSeriesReader(xdmf_field_path)
+    points, cells = reader.read_points_cells()
+    n_cells = cells["tetra"].shape[0]
+    n_steps = reader.num_steps
+
+    centroids = compute_cell_centroids(cells["tetra"], points)
+    tensor_field = np.zeros((n_steps, n_cells, 3, 3))
+    time_list = np.zeros(n_steps)
+
+    for k in range(reader.num_steps):
+        # Read data
+        time, point_data, cell_data = reader.read_data(k)
+
+        # Add time
+        time_list[k] = time
+
+        # Add tensor
+        field_name = list(cell_data["tetra"].keys())[0]
+        tensor_field[k,:,:] = cell_data["tetra"][field_name].reshape((n_cells, 3, 3))
+
+    return centroids, time_list, tensor_field
+
+
+def read_cell_scalar(xdmf_field_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Read a time series of cell-centered scalar fields from an XDMF file.
+
+    Parameters
+    ----------
+    xdmf_field_path : str
+        Path to the XDMF file containing cell data (``cells['tetra']``).
+
+    Returns
+    -------
+    centroids : (n_cells, 3) ndarray of float
+        Centroid coordinates of the tetrahedral cells.
+    time_list : (n_steps,) ndarray of float
+        Time values for each time step.
+    scalar_field : (n_steps, n_cells) ndarray of float
+        Scalar values per time step and cell.
+
+    Notes
+    -----
+    The function assumes a single scalar field is present under
+    ``cell_data['tetra']`` at each time step.
+    """
+    reader = ms.xdmf.TimeSeriesReader(xdmf_field_path)
+
+    points, cells = reader.read_points_cells()
+    n_cells = cells["tetra"].shape[0]
+    n_steps = reader.num_steps
+
+    centroids = compute_cell_centroids(cells["tetra"], points)
+    scalar_field = np.zeros((n_steps, n_cells))
+    time_list = np.zeros(n_steps)
+
+    for k in range(reader.num_steps):
+        # Read data
+        time, point_data, cell_data = reader.read_data(k)
+
+        # Add time
+        time_list[k] = time
+
+        # Add scalar
+        field_name = list(cell_data["tetra"].keys())[0]
+        scalar_field[k] = cell_data["tetra"][field_name].flatten()
+
+    return centroids, time_list, scalar_field
+
+
+def read_node_scalar(xdmf_field_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Read a time series of node-based scalar fields from an XDMF file.
+
+    Parameters
+    ----------
+    xdmf_field_path : str
+        Path to the XDMF file containing point data.
+
+    Returns
+    -------
+    points : (n_nodes, 3) ndarray of float
+        Node coordinates (x, y, z).
+    time_list : (n_steps,) ndarray of float
+        Time values for each time step.
+    scalar_field : (n_steps, n_nodes) ndarray of float
+        Scalar values at nodes for each time step.
+
+    Notes
+    -----
+    The function assumes a single scalar field exists in ``point_data`` at
+    each time step and flattens it to 1D per step.
+    """
+    reader = ms.xdmf.TimeSeriesReader(xdmf_field_path)
+
+    points, cells = reader.read_points_cells()
+    n_nodes = points.shape[0]
+    n_steps = reader.num_steps
+
+    scalar_field = np.zeros((n_steps, n_nodes))
+    time_list = np.zeros(n_steps)
+
+    for k in range(reader.num_steps):
+        # Read data
+        time, point_data, cell_data = reader.read_data(k)
+
+        # Add time
+        time_list[k] = time
+
+        # Add scalar
+        field_name = list(point_data.keys())[0]
+        scalar_field[k] = point_data[field_name].flatten()
+
+    return points, time_list, scalar_field
+
+
+def read_node_vector(xdmf_field_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Read a time series of node-based 3D vector fields from an XDMF file.
+
+    Parameters
+    ----------
+    xdmf_field_path : str
+        Path to the XDMF file containing point data.
+
+    Returns
+    -------
+    points : (n_nodes, 3) ndarray of float
+        Node coordinates (x, y, z).
+    time_list : (n_steps,) ndarray of float
+        Time values for each time step.
+    vector_field : (n_steps, n_nodes, 3) ndarray of float
+        Vector values (vx, vy, vz) at nodes for each time step.
+
+    Notes
+    -----
+    The function assumes a single vector field exists in ``point_data`` at
+    each time step with shape ``(n_nodes, 3)``.
+    """
+    reader = ms.xdmf.TimeSeriesReader(xdmf_field_path)
+
+    points, cells = reader.read_points_cells()
+    n_nodes = points.shape[0]
+    n_steps = reader.num_steps
+
+    vector_field = np.zeros((n_steps, n_nodes, 3))
+    time_list = np.zeros(n_steps)
+
+    for k in range(reader.num_steps):
+        # Read data
+        time, point_data, cell_data = reader.read_data(k)
+
+        # Add time
+        time_list[k] = time
+
+        # Add scalar
+        field_name = list(point_data.keys())[0]
+        vector_field[k,:,:] = point_data[field_name]
+
+    return points, time_list, vector_field
