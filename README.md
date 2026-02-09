@@ -1,8 +1,27 @@
-# Source code release
+# Salt cavern simulations with a stabilized mixed finite element formulation for low-order tetrahedral elements
 
-This repository contains the source code and scripts used to generate the results presented in the paper 
+This repository contains the source code accompanying the paper:
 
-Honório, H.T., Franceschini, A., Ferronato, M., Hajibeygi, H. *Salt cavern simulations with a stabilized mixed finite element formulation for low-order tetrahedral elements*, CMAME, 2026.
+> **Salt cavern simulations with a stabilized mixed finite element formulation for low-order tetrahedral elements**  
+> Hermínio T. Honório, Andrea Franceschini, Massimiliano Ferronato, and Hadi Hajibeygi  
+> *(submitted to / accepted in [Journal name])*  
+
+The purpose of this repository is to ensure **reproducibility**, **transparency**, and **reusability** of the numerical methods and results presented in the paper.
+
+---
+
+## Scope of the repository
+
+This repository provides:
+
+- Implementation of the **stabilized mixed finite element formulation**
+- Reproducible **numerical examples** used in the paper
+- Scripts for **mesh handling**, **problem setup**, and **post-processing**
+- Reference input files and configuration parameters
+
+The code is intended for **research and educational purposes** and reflects the formulations and assumptions described in the paper.
+
+---
 
 ## Requirements
 
@@ -23,3 +42,7 @@ After installing FEniCSx 0.9.0, install the Python dependencies:
 ```bash
 
 pip install -r requirements.txt
+```
+
+
+
